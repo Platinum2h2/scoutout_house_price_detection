@@ -1,3 +1,14 @@
+# housing_app.py
+
+import os
+import fiona
+
+if not hasattr(fiona, "path"):
+    fiona.path = os.path
+
+import streamlit as st
+import pandas as pd
+
 import streamlit as st
 st.set_page_config(page_title="ScoutOut AI - Housing Price Prediction", page_icon=":house:")
 

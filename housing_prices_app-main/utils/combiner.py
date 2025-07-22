@@ -1,32 +1,65 @@
-# combiner.py (utils/combiner.py)
-
+from sklearn.base import BaseEstimator, TransformerMixin
 import geopandas as gpd
 import pandas as pd
-import numpy as np
 import os
-from sklearn.base import BaseEstimator, TransformerMixin
 
 class CombinedAttributesAdder(BaseEstimator, TransformerMixin):
-    def __init__(self):
+
+    DISTANCE_CRS = 3310
+    CRS = 4326
+
+    def __init__(self, add_bedrooms_per_room=True):
+        self.add_bedrooms_per_room = add_bedrooms_per_room
+
+        # Load from CSV instead of geojson
         base_path = os.path.dirname(os.path.abspath(__file__))
-        self.city_path = os.path.join(base_path, '../data/cities.geojson')
-        self.city_gdf = gpd.read_file(self.city_path)
+        self.city_path = os.path.join(base_path, '../data/cal_cities_lat_long.csv')
 
-    def add_nearest_cities(self, df):
-        if 'lon' not in df.columns or 'lat' not in df.columns:
-            raise ValueError("DataFrame must contain 'lon' and 'lat' columns")
+        california_cities = pd.read_csv(self.city_path)
+        geometry = gpd.points_from_xy(california_cities['Longitude'], california_cities['Latitude'])
+        self.points_cal = gpd.GeoDataFrame(california_cities, geometry=geometry)
+        self.points_cal.set_crs(self.CRS, inplace=True)
 
-        geo_df = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.lon, df.lat))
-        geo_df.set_crs(epsg=4326, inplace=True)
+        self._feature_names_out = None
 
-        distances = geo_df.geometry.apply(lambda point: self.city_gdf.distance(point))
-        nearest_city_indices = distances.idxmin(axis=1)
-        geo_df['nearest_city'] = self.city_gdf.loc[nearest_city_indices, 'city'].values
+    @staticmethod
+    def dataframe_to_geo(data: pd.DataFrame):
+        geometry = gpd.points_from_xy(data['lon'], data['lat'])
+        data = gpd.GeoDataFrame(data).set_geometry(geometry).set_crs(CombinedAttributesAdder.CRS)
+        return data
 
-        return geo_df
+    def add_nearest_cities(self, data):
+        if not isinstance(data, gpd.GeoDataFrame):
+            data = self.dataframe_to_geo(data)
+
+        nearest_cities = gpd.sjoin_nearest(
+            data.to_crs(self.DISTANCE_CRS),
+            self.points_cal.to_crs(self.DISTANCE_CRS),
+            how='left',
+            distance_col='distance_nearest_city'
+        ).drop(columns=['index_right'])
+
+        nearest_cities = nearest_cities.rename(columns={'Name': 'nearest_city'})
+        nearest_cities = nearest_cities[~nearest_cities.index.duplicated(keep='first')]
+
+        return nearest_cities
 
     def fit(self, X, y=None):
         return self
 
-    def transform(self, X):
-        return self.add_nearest_cities(X)
+    def transform(self, X, y=None):
+        data = self.dataframe_to_geo(X)
+
+        joined_data = self.add_nearest_cities(data).to_crs(self.DISTANCE_CRS)
+
+        X = joined_data.drop(columns=['geometry', 'lat', 'lon', 'Latitude', 'Longitude'])
+        X = X.assign(
+            rooms_per_household=X.total_rooms / X.households,
+            bedrooms_per_room=X.total_bedrooms / X.total_rooms if self.add_bedrooms_per_room else None
+        )
+
+        self._feature_names_out = X.columns.to_list()
+        return X
+
+    def get_feature_names_out(self, input_feature=None):
+        return self._feature_names_out

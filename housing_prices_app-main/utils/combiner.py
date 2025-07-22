@@ -9,10 +9,10 @@ class CombinedAttributesAdder(BaseEstimator, TransformerMixin):
     CRS = 4326
 
     def __init__(self, add_bedrooms_per_room=True):
-        print("✅ USING NEW CombinedAttributesAdder (CSV version)")
+        print("✅ Using Fiona-free CombinedAttributesAdder (CSV-based)")
         self.add_bedrooms_per_room = add_bedrooms_per_room
 
-        # Load city coordinates from CSV
+        # Load city coordinates from a CSV file (safe, no fiona)
         base_path = os.path.dirname(os.path.abspath(__file__))
         self.city_path = os.path.join(base_path, '../data/cal_cities_lat_long.csv')
 
@@ -26,7 +26,8 @@ class CombinedAttributesAdder(BaseEstimator, TransformerMixin):
     @staticmethod
     def dataframe_to_geo(data: pd.DataFrame):
         geometry = gpd.points_from_xy(data['lon'], data['lat'])
-        data = gpd.GeoDataFrame(data).set_geometry(geometry).set_crs(CombinedAttributesAdder.CRS)
+        data = gpd.GeoDataFrame(data.copy(), geometry=geometry)
+        data.set_crs(CombinedAttributesAdder.CRS, inplace=True)
         return data
 
     def add_nearest_cities(self, data):
@@ -38,11 +39,13 @@ class CombinedAttributesAdder(BaseEstimator, TransformerMixin):
             self.points_cal.to_crs(self.DISTANCE_CRS),
             how='left',
             distance_col='distance_nearest_city'
-        ).drop(columns=['index_right'])
+        ).drop(columns=['index_right'], errors='ignore')
 
-        # Rename to generic label
-        nearest_cities = nearest_cities.rename(columns={'Name': 'nearest_city'})  # Optional if 'Name' exists
-        nearest_cities = nearest_cities[~nearest_cities.index.duplicated(keep='first')]
+        # If the CSV has a city name column, rename for consistency (optional)
+        for col in ['city', 'City', 'name', 'Name']:
+            if col in nearest_cities.columns:
+                nearest_cities = nearest_cities.rename(columns={col: 'nearest_city'})
+                break
 
         return nearest_cities
 
@@ -54,10 +57,14 @@ class CombinedAttributesAdder(BaseEstimator, TransformerMixin):
 
         joined_data = self.add_nearest_cities(data).to_crs(self.DISTANCE_CRS)
 
-        X = joined_data.drop(columns=['geometry', 'lat', 'lon', 'Latitude', 'Longitude'], errors='ignore')
+        X = joined_data.drop(columns=[
+            'geometry', 'lat', 'lon', 'Latitude', 'Longitude'
+        ], errors='ignore')
+
         X = X.assign(
             rooms_per_household=X.total_rooms / X.households,
-            bedrooms_per_room=X.total_bedrooms / X.total_rooms if self.add_bedrooms_per_room else None
+            bedrooms_per_room=(X.total_bedrooms / X.total_rooms)
+            if self.add_bedrooms_per_room else None
         )
 
         self._feature_names_out = X.columns.to_list()
